@@ -38,6 +38,8 @@ resource "kubernetes_persistent_volume_claim" "data" {
     namespace = kubernetes_namespace.waifu_mirror.metadata[0].name
   }
 
+  wait_until_bound = false
+
   spec {
     access_modes = ["ReadWriteOnce"]
     resources {
