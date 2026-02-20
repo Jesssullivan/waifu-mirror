@@ -39,3 +39,16 @@ variable "hostname" {
   type        = string
   default     = "waifu.ephemera.tinyland.dev"
 }
+
+variable "tailscale_auth_key" {
+  description = "Tailscale auth key for sidecar (from CIVO_TS_AUTH_KEY env or tfvars)"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "tailscale_hostname" {
+  description = "Tailscale hostname for the sidecar node"
+  type        = string
+  default     = "waifu-mirror"
+}
