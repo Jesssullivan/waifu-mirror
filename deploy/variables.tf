@@ -13,7 +13,7 @@ variable "civo_region" {
 variable "cluster_name" {
   description = "Existing CIVO K8s cluster name"
   type        = string
-  default     = "bitter-darkness"
+  default     = "tinyland-civo-dev"
 }
 
 variable "namespace" {
