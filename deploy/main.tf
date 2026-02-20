@@ -1,5 +1,5 @@
 provider "civo" {
-  token  = var.civo_token
+  # Token read from CIVO_TOKEN env var (set by CI or TF_VAR_civo_token).
   region = var.civo_region
 }
 

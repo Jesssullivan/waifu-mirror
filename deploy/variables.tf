@@ -1,9 +1,3 @@
-variable "civo_token" {
-  description = "CIVO API token"
-  type        = string
-  sensitive   = true
-}
-
 variable "civo_region" {
   description = "CIVO region"
   type        = string

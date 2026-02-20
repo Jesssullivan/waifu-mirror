@@ -40,7 +40,7 @@ jobs:
 
       - name: Plan
         env:
-          TF_VAR_civo_token: ${{ secrets.CIVO_TOKEN }}
+          CIVO_TOKEN: ${{ secrets.CIVO_TOKEN }}
         run: tofu plan -out=tfplan
 
       - uses: actions/upload-artifact@v4
@@ -73,5 +73,5 @@ jobs:
 
       - name: Apply
         env:
-          TF_VAR_civo_token: ${{ secrets.CIVO_TOKEN }}
+          CIVO_TOKEN: ${{ secrets.CIVO_TOKEN }}
         run: tofu apply -auto-approve tfplan
