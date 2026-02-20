@@ -15,8 +15,8 @@ locals {
 provider "kubernetes" {
   host                   = local.kube.clusters[0].cluster.server
   cluster_ca_certificate = base64decode(local.kube.clusters[0].cluster["certificate-authority-data"])
-  username               = try(local.kube.users[0].user.username, null)
-  password               = try(local.kube.users[0].user.password, null)
+  client_certificate     = try(base64decode(local.kube.users[0].user["client-certificate-data"]), null)
+  client_key             = try(base64decode(local.kube.users[0].user["client-key-data"]), null)
   token                  = try(local.kube.users[0].user.token, null)
 }
 
