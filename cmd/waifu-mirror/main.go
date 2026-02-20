@@ -26,6 +26,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -36,6 +37,7 @@ import (
 	"github.com/Jesssullivan/waifu-mirror/internal/catalog"
 	"github.com/Jesssullivan/waifu-mirror/internal/ingest"
 	"github.com/Jesssullivan/waifu-mirror/internal/server"
+	"tailscale.com/tsnet"
 )
 
 var (
@@ -129,13 +131,7 @@ func main() {
 	// Build HTTP server.
 	handler := server.New(cat, imgDir)
 
-	listenAddr := *addr
-	if *tailnetOnly {
-		log.Printf("tailnet-only mode: listening on %s (use -tailnet-only=false for all interfaces)", listenAddr)
-	}
-
 	srv := &http.Server{
-		Addr:    listenAddr,
 		Handler: handler,
 	}
 
@@ -146,8 +142,32 @@ func main() {
 		srv.Shutdown(shutdownCtx)
 	}()
 
-	log.Printf("waifu-mirror %s listening on %s", version, listenAddr)
-	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
+	var ln net.Listener
+	if *tailnetOnly {
+		// tsnet binds directly to the tailnet — no public exposure.
+		tsnetDir := filepath.Join(*dataDir, "tsnet")
+		ts := &tsnet.Server{
+			Hostname: "waifu-mirror",
+			Dir:      tsnetDir,
+		}
+		defer ts.Close()
+
+		var tsErr error
+		ln, tsErr = ts.Listen("tcp", *addr)
+		if tsErr != nil {
+			log.Fatalf("tsnet listen: %v", tsErr)
+		}
+		log.Printf("waifu-mirror %s listening on tailnet (hostname: waifu-mirror, addr: %s)", version, ln.Addr())
+	} else {
+		var listenErr error
+		ln, listenErr = net.Listen("tcp", *addr)
+		if listenErr != nil {
+			log.Fatalf("listen: %v", listenErr)
+		}
+		log.Printf("waifu-mirror %s listening on %s", version, *addr)
+	}
+
+	if err := srv.Serve(ln); err != http.ErrServerClosed {
 		log.Fatalf("server: %v", err)
 	}
 }

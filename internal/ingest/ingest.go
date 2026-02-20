@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/Jesssullivan/waifu-mirror/internal/catalog"
 	"github.com/Jesssullivan/waifu-mirror/internal/optimize"
+	"golang.org/x/time/rate"
 )
 
 // Upstream API endpoints.
@@ -32,7 +34,14 @@ type Ingester struct {
 	cat    *catalog.DB
 	imgDir string
 	hc     *http.Client
+
+	// Per-source rate limiters.
+	waifuImLimiter   *rate.Limiter // 5 req/sec (API documented limit)
+	waifuPicsLimiter *rate.Limiter // 1 req/sec (undocumented, conservative)
+	downloadLimiter  *rate.Limiter // 10 req/sec for image downloads
 }
+
+const maxRetries = 3
 
 // New creates an Ingester that stores images in imgDir.
 func New(cat *catalog.DB, imgDir string) *Ingester {
@@ -42,6 +51,9 @@ func New(cat *catalog.DB, imgDir string) *Ingester {
 		hc: &http.Client{
 			Timeout: 30 * time.Second,
 		},
+		waifuImLimiter:   rate.NewLimiter(rate.Limit(5), 1),
+		waifuPicsLimiter: rate.NewLimiter(rate.Limit(1), 1),
+		downloadLimiter:  rate.NewLimiter(rate.Limit(10), 3),
 	}
 }
 
@@ -96,25 +108,19 @@ func (ing *Ingester) ingestWaifuIm(ctx context.Context, category string) (int, e
 		isNSFW = "true"
 	}
 
+	// Rate limit API calls.
+	if err := ing.waifuImLimiter.Wait(ctx); err != nil {
+		return 0, err
+	}
+
 	url := fmt.Sprintf("%s?included_tags=waifu&is_nsfw=%s&limit=30", waifuImSearchURL, isNSFW)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	body, err := ing.fetchWithRetry(ctx, http.MethodGet, url, "waifu.im", ing.waifuImLimiter)
 	if err != nil {
 		return 0, err
-	}
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := ing.hc.Do(req)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("waifu.im returned %d", resp.StatusCode)
 	}
 
 	var result waifuImResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.Unmarshal(body, &result); err != nil {
 		return 0, err
 	}
 
@@ -136,25 +142,18 @@ type waifuPicsResponse struct {
 }
 
 func (ing *Ingester) ingestWaifuPics(ctx context.Context, apiURL, category string) (int, error) {
-	// waifu.pics /many endpoint expects POST with empty JSON body.
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, nil)
-	if err != nil {
+	// Rate limit API calls.
+	if err := ing.waifuPicsLimiter.Wait(ctx); err != nil {
 		return 0, err
 	}
-	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := ing.hc.Do(req)
+	body, err := ing.fetchWithRetry(ctx, http.MethodPost, apiURL, "waifu.pics", ing.waifuPicsLimiter)
 	if err != nil {
 		return 0, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("waifu.pics returned %d", resp.StatusCode)
 	}
 
 	var result waifuPicsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.Unmarshal(body, &result); err != nil {
 		return 0, err
 	}
 
@@ -173,24 +172,13 @@ func (ing *Ingester) ingestWaifuPics(ctx context.Context, apiURL, category strin
 // processImage downloads, deduplicates, optimizes, and stores a single image.
 // Returns 1 if the image was new and stored, 0 if duplicate.
 func (ing *Ingester) processImage(ctx context.Context, srcURL, source, category string, origW, origH int) (int, error) {
-	// Download.
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srcURL, nil)
-	if err != nil {
+	// Rate limit downloads.
+	if err := ing.downloadLimiter.Wait(ctx); err != nil {
 		return 0, err
 	}
 
-	resp, err := ing.hc.Do(req)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("download %d", resp.StatusCode)
-	}
-
-	// Read with 10MB limit.
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
+	// Download with retry.
+	data, err := ing.downloadImage(ctx, srcURL)
 	if err != nil {
 		return 0, err
 	}
@@ -239,6 +227,112 @@ func (ing *Ingester) processImage(ctx context.Context, srcURL, source, category 
 	}
 
 	return 1, nil
+}
+
+// downloadImage fetches an image with retry and backoff.
+func (ing *Ingester) downloadImage(ctx context.Context, srcURL string) ([]byte, error) {
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			backoff := backoffDuration(attempt)
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(backoff):
+			}
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, srcURL, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		resp, err := ing.hc.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+			resp.Body.Close()
+			lastErr = fmt.Errorf("download %d", resp.StatusCode)
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			return nil, fmt.Errorf("download %d", resp.StatusCode)
+		}
+
+		data, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
+		resp.Body.Close()
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		return data, nil
+	}
+	return nil, fmt.Errorf("after %d retries: %w", maxRetries, lastErr)
+}
+
+// fetchWithRetry performs an HTTP request with exponential backoff retry
+// for transient errors (429, 5xx) and rate limiting.
+func (ing *Ingester) fetchWithRetry(ctx context.Context, method, url, source string, limiter *rate.Limiter) ([]byte, error) {
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			backoff := backoffDuration(attempt)
+			log.Printf("ingest: %s retry %d after %v", source, attempt, backoff)
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(backoff):
+			}
+			// Re-acquire rate limit token on retry.
+			if err := limiter.Wait(ctx); err != nil {
+				return nil, err
+			}
+		}
+
+		req, err := http.NewRequestWithContext(ctx, method, url, nil)
+		if err != nil {
+			return nil, err // Not retryable.
+		}
+		if method == http.MethodPost {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		req.Header.Set("Accept", "application/json")
+
+		resp, err := ing.hc.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		resp.Body.Close()
+
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+			lastErr = fmt.Errorf("%s returned %d", source, resp.StatusCode)
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("%s returned %d", source, resp.StatusCode)
+		}
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		return body, nil
+	}
+	return nil, fmt.Errorf("after %d retries: %w", maxRetries, lastErr)
+}
+
+// backoffDuration returns exponential backoff with jitter.
+func backoffDuration(attempt int) time.Duration {
+	base := time.Duration(1<<uint(attempt)) * time.Second // 1s, 2s, 4s
+	jitter := time.Duration(rand.Int63n(int64(base / 2)))
+	return base + jitter
 }
 
 func contentHash(data []byte) string {
