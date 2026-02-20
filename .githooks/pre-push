@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Local pre-push hook: Run tests before pushing
+# Install: git config core.hooksPath .githooks
+set -euo pipefail
+
+# Only test if Go files exist in the push
+echo "pre-push: running tests..."
+if ! go test -count=1 ./... 2>&1; then
+  echo ""
+  echo "Tests failed. Fix before pushing."
+  exit 1
+fi
+
+echo "pre-push: all tests pass"

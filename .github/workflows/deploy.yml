@@ -1,0 +1,77 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "deploy/**"
+      - "k8s/**"
+      - "Dockerfile"
+      - ".github/workflows/deploy.yml"
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Tofu action (plan or apply)"
+        required: true
+        default: "plan"
+        type: choice
+        options:
+          - plan
+          - apply
+
+env:
+  TOFU_VERSION: "1.9.0"
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: deploy
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: ${{ env.TOFU_VERSION }}
+
+      - name: Init
+        run: tofu init
+
+      - name: Plan
+        env:
+          TF_VAR_civo_token: ${{ secrets.CIVO_TOKEN }}
+        run: tofu plan -out=tfplan
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tfplan
+          path: deploy/tfplan
+
+  apply:
+    runs-on: ubuntu-latest
+    needs: plan
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'apply'
+    environment: production
+    defaults:
+      run:
+        working-directory: deploy
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: ${{ env.TOFU_VERSION }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: tfplan
+          path: deploy
+
+      - name: Init
+        run: tofu init
+
+      - name: Apply
+        env:
+          TF_VAR_civo_token: ${{ secrets.CIVO_TOKEN }}
+        run: tofu apply -auto-approve tfplan
