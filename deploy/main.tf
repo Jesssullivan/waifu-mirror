@@ -139,7 +139,7 @@ resource "kubernetes_deployment" "waifu_mirror" {
   }
 }
 
-# LoadBalancer Service (external access for prompt-pulse collectors)
+# ClusterIP Service (nginx-ingress handles external access)
 resource "kubernetes_service" "waifu_mirror" {
   metadata {
     name      = "waifu-mirror"
@@ -161,11 +161,45 @@ resource "kubernetes_service" "waifu_mirror" {
       name        = "http"
     }
 
-    type = "LoadBalancer"
+    type = "ClusterIP"
   }
 }
 
-output "service_ip" {
-  description = "External IP of the waifu-mirror LoadBalancer"
-  value       = try(kubernetes_service.waifu_mirror.status[0].load_balancer[0].ingress[0].ip, "pending")
+# Ingress with TLS via cert-manager (DNS-01 challenge for tinyland.dev)
+resource "kubernetes_ingress_v1" "waifu_mirror" {
+  metadata {
+    name      = "waifu-mirror"
+    namespace = kubernetes_namespace.waifu_mirror.metadata[0].name
+    annotations = {
+      "cert-manager.io/cluster-issuer"           = "letsencrypt-dns01"
+      "nginx.ingress.kubernetes.io/ssl-redirect" = "true"
+    }
+  }
+
+  spec {
+    ingress_class_name = "nginx"
+
+    tls {
+      hosts       = [var.hostname]
+      secret_name = "waifu-mirror-tls"
+    }
+
+    rule {
+      host = var.hostname
+      http {
+        path {
+          path      = "/"
+          path_type = "Prefix"
+          backend {
+            service {
+              name = kubernetes_service.waifu_mirror.metadata[0].name
+              port {
+                number = 8420
+              }
+            }
+          }
+        }
+      }
+    }
+  }
 }

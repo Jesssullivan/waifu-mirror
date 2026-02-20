@@ -33,3 +33,9 @@ variable "ingest_interval" {
   type        = string
   default     = "1h"
 }
+
+variable "hostname" {
+  description = "Public hostname for ingress TLS"
+  type        = string
+  default     = "waifu.ephemera.tinyland.dev"
+}
