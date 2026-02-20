@@ -43,6 +43,7 @@ jobs:
           if_no_artifact_found: warn
           workflow_conclusion: ""
           search_artifacts: true
+          workflow_search: true
 
       - name: Init
         run: tofu init
@@ -80,6 +81,7 @@ jobs:
           if_no_artifact_found: warn
           workflow_conclusion: ""
           search_artifacts: true
+          workflow_search: true
 
       - uses: actions/download-artifact@v4
         with:
