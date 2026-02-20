@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"bytes"
 	"io"
 	"log"
 	"math/rand"
@@ -24,9 +25,9 @@ import (
 
 // Upstream API endpoints.
 const (
-	waifuImSearchURL  = "https://api.waifu.im/search"
-	waifuPicsManyURL  = "https://api.waifu.pics/many/sfw/waifu"
-	waifuPicsNSFWURL  = "https://api.waifu.pics/many/nsfw/waifu"
+	waifuImSearchURL = "https://api.waifu.im/images"
+	waifuPicsManyURL = "https://api.waifu.pics/many/sfw/waifu"
+	waifuPicsNSFWURL = "https://api.waifu.pics/many/nsfw/waifu"
 )
 
 // Ingester fetches and processes images from upstream APIs.
@@ -93,13 +94,13 @@ func (ing *Ingester) Run(ctx context.Context) (int, error) {
 	return total, nil
 }
 
-// waifuImResponse matches the waifu.im API response structure.
+// waifuImResponse matches the waifu.im /images API response.
 type waifuImResponse struct {
-	Images []struct {
+	Items []struct {
 		URL    string `json:"url"`
 		Width  int    `json:"width"`
 		Height int    `json:"height"`
-	} `json:"images"`
+	} `json:"items"`
 }
 
 func (ing *Ingester) ingestWaifuIm(ctx context.Context, category string) (int, error) {
@@ -113,8 +114,8 @@ func (ing *Ingester) ingestWaifuIm(ctx context.Context, category string) (int, e
 		return 0, err
 	}
 
-	url := fmt.Sprintf("%s?included_tags=waifu&is_nsfw=%s&limit=30", waifuImSearchURL, isNSFW)
-	body, err := ing.fetchWithRetry(ctx, http.MethodGet, url, "waifu.im", ing.waifuImLimiter)
+	url := fmt.Sprintf("%s?included_tags=waifu&is_nsfw=%s&page_size=30", waifuImSearchURL, isNSFW)
+	body, err := ing.fetchWithRetry(ctx, http.MethodGet, url, nil, "waifu.im", ing.waifuImLimiter)
 	if err != nil {
 		return 0, err
 	}
@@ -125,7 +126,7 @@ func (ing *Ingester) ingestWaifuIm(ctx context.Context, category string) (int, e
 	}
 
 	var count int
-	for _, img := range result.Images {
+	for _, img := range result.Items {
 		n, err := ing.processImage(ctx, img.URL, "waifu.im", category, img.Width, img.Height)
 		if err != nil {
 			log.Printf("ingest: process %s: %v", img.URL, err)
@@ -147,7 +148,8 @@ func (ing *Ingester) ingestWaifuPics(ctx context.Context, apiURL, category strin
 		return 0, err
 	}
 
-	body, err := ing.fetchWithRetry(ctx, http.MethodPost, apiURL, "waifu.pics", ing.waifuPicsLimiter)
+	reqBody := []byte(`{"exclude":[]}`)
+	body, err := ing.fetchWithRetry(ctx, http.MethodPost, apiURL, reqBody, "waifu.pics", ing.waifuPicsLimiter)
 	if err != nil {
 		return 0, err
 	}
@@ -276,7 +278,7 @@ func (ing *Ingester) downloadImage(ctx context.Context, srcURL string) ([]byte, 
 
 // fetchWithRetry performs an HTTP request with exponential backoff retry
 // for transient errors (429, 5xx) and rate limiting.
-func (ing *Ingester) fetchWithRetry(ctx context.Context, method, url, source string, limiter *rate.Limiter) ([]byte, error) {
+func (ing *Ingester) fetchWithRetry(ctx context.Context, method, url string, reqBody []byte, source string, limiter *rate.Limiter) ([]byte, error) {
 	var lastErr error
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		if attempt > 0 {
@@ -293,11 +295,15 @@ func (ing *Ingester) fetchWithRetry(ctx context.Context, method, url, source str
 			}
 		}
 
-		req, err := http.NewRequestWithContext(ctx, method, url, nil)
+		var bodyReader io.Reader
+		if reqBody != nil {
+			bodyReader = bytes.NewReader(reqBody)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, url, bodyReader)
 		if err != nil {
 			return nil, err // Not retryable.
 		}
-		if method == http.MethodPost {
+		if reqBody != nil {
 			req.Header.Set("Content-Type", "application/json")
 		}
 		req.Header.Set("Accept", "application/json")
