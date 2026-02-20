@@ -8,10 +8,16 @@ data "civo_kubernetes_cluster" "cluster" {
   name = var.cluster_name
 }
 
+locals {
+  kube = yamldecode(data.civo_kubernetes_cluster.cluster.kubeconfig)
+}
+
 provider "kubernetes" {
-  host                   = data.civo_kubernetes_cluster.cluster.api_endpoint
-  cluster_ca_certificate = base64decode(data.civo_kubernetes_cluster.cluster.kubeconfig[0].cluster_ca_certificate)
-  token                  = data.civo_kubernetes_cluster.cluster.kubeconfig[0].token
+  host                   = local.kube.clusters[0].cluster.server
+  cluster_ca_certificate = base64decode(local.kube.clusters[0].cluster["certificate-authority-data"])
+  username               = try(local.kube.users[0].user.username, null)
+  password               = try(local.kube.users[0].user.password, null)
+  token                  = try(local.kube.users[0].user.token, null)
 }
 
 # Namespace
