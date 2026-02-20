@@ -1,0 +1,84 @@
+# Waifu Mirror K8s Deployment
+# Scale-to-zero friendly: KEDA can scale this to 0 replicas when idle.
+# Tailnet access: Use Tailscale operator sidecar or service mesh.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: waifu-mirror
+  namespace: waifu-mirror
+  labels:
+    app: waifu-mirror
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: waifu-mirror
+  template:
+    metadata:
+      labels:
+        app: waifu-mirror
+    spec:
+      containers:
+        - name: waifu-mirror
+          image: ghcr.io/jesssullivan/waifu-mirror:latest
+          ports:
+            - containerPort: 8420
+              name: http
+          args:
+            - "-data"
+            - "/data"
+            - "-tailnet-only=false"
+            - "-cron"
+            - "1h"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 10
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: waifu-mirror-data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: waifu-mirror-data
+  namespace: waifu-mirror
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: waifu-mirror
+  namespace: waifu-mirror
+spec:
+  selector:
+    app: waifu-mirror
+  ports:
+    - port: 8420
+      targetPort: http
+      name: http
+  type: ClusterIP

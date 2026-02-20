@@ -1,0 +1,19 @@
+# Binaries
+/waifu-mirror
+*.exe
+
+# Data
+/data/
+*.db
+*.db-wal
+*.db-shm
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
