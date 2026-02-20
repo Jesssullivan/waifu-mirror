@@ -139,7 +139,7 @@ resource "kubernetes_deployment" "waifu_mirror" {
   }
 }
 
-# ClusterIP Service (internal only)
+# LoadBalancer Service (external access for prompt-pulse collectors)
 resource "kubernetes_service" "waifu_mirror" {
   metadata {
     name      = "waifu-mirror"
@@ -161,6 +161,11 @@ resource "kubernetes_service" "waifu_mirror" {
       name        = "http"
     }
 
-    type = "ClusterIP"
+    type = "LoadBalancer"
   }
+}
+
+output "service_ip" {
+  description = "External IP of the waifu-mirror LoadBalancer"
+  value       = try(kubernetes_service.waifu_mirror.status[0].load_balancer[0].ingress[0].ip, "pending")
 }
